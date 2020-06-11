@@ -35,6 +35,12 @@ namespace MqttUdp
                 Buffer[Position++] = value;
             }
 
+            public void WriteBigEndian(short value)
+            {
+                BinaryPrimitives.WriteInt16BigEndian(Buffer.AsSpan(Position, sizeof(short)), value);
+                Position += sizeof(short);
+            }
+
             public void Write(ReadOnlySpan<byte> data)
             {
                 data.CopyTo(Buffer.AsSpan(Position, data.Length));

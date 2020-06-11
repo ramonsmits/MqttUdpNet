@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Linq;
-using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -8,8 +7,7 @@ using Vlq;
 
 namespace MqttUdp
 {
-
-    public static partial class PacketEncoder
+    internal static partial class PacketEncoder
     {
         static readonly Encoding Encoding = Encoding.UTF8;
         static int sequence;
@@ -28,14 +26,13 @@ namespace MqttUdp
             var w = new Writer();
 
             var topicBytes = Encoding.GetBytes(packet.Topic);
-            var topicLengthBytes = VarLenQuantity.ToVlqCollection((ulong)topicBytes.Length).ToArray();
-
+            const int topicLengthBytesLength = 2;
             w.Write((byte)PacketType.Publish);
 
-            var length = topicLengthBytes.Length + topicBytes.Length + packet.Payload.Length;
+            var length = topicLengthBytesLength + topicBytes.Length + packet.Payload.Length;
 
             w.WriteVlq(length);
-            w.Write(topicLengthBytes);
+            w.WriteBigEndian((short)topicBytes.Length);
             w.Write(topicBytes);
             w.Write(packet.Payload);
 
@@ -103,12 +100,14 @@ namespace MqttUdp
 
             if (length + 2 > data.Length) throw new InvalidOperationException("Packet too short");
 
-            var topicLength = r.ReadInt32Vlq(out var topicLengthBytes);
+            const int topicLengthBytes = 2;
+
+            var topicLength = r.ReadInt16BigEndian();
             var topic = Encoding.GetString(r.ReadBytes(topicLength));
             var remaining = length - topicLengthBytes - topicLength;
             var payload = r.ReadBytes(remaining);
 
-            var number = 0L;
+            int number = 0;
             DateTime measuredAt = default;
             DateTime sentAt = default;
             byte[] hashFromPacket = Array.Empty<byte>(); ;

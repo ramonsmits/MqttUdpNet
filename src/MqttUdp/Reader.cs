@@ -58,6 +58,13 @@ namespace MqttUdp
                 return result;
             }
 
+            public short ReadInt16BigEndian()
+            {
+                var result = BinaryPrimitives.ReadInt16BigEndian(Buffer.AsSpan(Position, sizeof(int)));
+                Position += sizeof(short);
+                return result;
+            }
+
             internal bool Peek()
             {
                 return Position < Buffer.Length;
