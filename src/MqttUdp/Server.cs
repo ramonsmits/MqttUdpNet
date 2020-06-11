@@ -6,6 +6,10 @@
     using System.Net.Sockets;
     using System.Linq;
     using System.Threading.Tasks;
+    using System.Collections.Concurrent;
+    using System.Threading;
+    using System.Globalization;
+    using Microsoft.Extensions.Logging;
 
     public class Server
     {
@@ -15,13 +19,19 @@
         public readonly PublishOptions DefaultPublishOptions = new PublishOptions();
         readonly List<TopicFilter> topics = new List<TopicFilter>();
         readonly Dictionary<string, byte[]> retainedMessages = new Dictionary<string, byte[]>();
-        readonly RateGate RateGate = new RateGate(3, TimeSpan.FromMilliseconds(300));
+        readonly RateGate? RateGate;
         readonly UdpClient udp;
         readonly IPEndPoint listenEP, sendEP;
         readonly HashSet<Func<PublishPacket, Task>> callbacks = new HashSet<Func<PublishPacket, Task>>();
+        readonly Timer pingTimer;
+        readonly ILogger<Server>? logger;
 
-        public Server(IPEndPoint endpoint)
+        public Server(IPEndPoint endpoint, ILogger<Server>? logger = null, (int occurrences, TimeSpan timeUnit) limitter = default)
         {
+            this.logger = logger;
+
+            if (limitter != default) RateGate = new RateGate(limitter.occurrences, limitter.timeUnit);
+
             listenEP = new IPEndPoint(IPAddress.Any, endpoint.Port);
             sendEP = endpoint;
 
@@ -41,6 +51,8 @@
 
             udp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
             udp.Client.Bind(listenEP);
+
+            pingTimer = new Timer(_ => _ = Ping(), null, TimeSpan.FromSeconds(0), TimeSpan.FromSeconds(60));
         }
 
         public async Task Subscribe(string topic)
@@ -58,6 +70,7 @@
 
         public Task Ping()
         {
+            logger?.LogTrace("TX PING");
             return SendAsync(new[] { (byte)PacketType.PingReq, (byte)0x00 });
         }
 
@@ -69,14 +82,16 @@
 
             if (options.Retain)
             {
-                Console.WriteLine("Retaining message");
+                logger?.LogTrace("Retaining message");
                 retainedMessages[message.Topic] = bytes;
             }
+
+            var items = new List<(IPEndPoint, int, byte[])>();
 
             await SendAsync(bytes);
         }
 
-        async Task SendAsync(byte[] bytes)
+        protected async Task SendAsync(byte[] bytes)
         {
             if (RateGate != null) await RateGate.WaitAsync();
             await udp.SendAsync(bytes, bytes.Length, sendEP);
@@ -91,41 +106,52 @@
         {
             while (true)
             {
-                var result = await udp.ReceiveAsync();
-                var bytes = result.Buffer;
-
-                if (bytes.Length < 2) throw new InvalidOperationException("Packet lenght < 2");
-
-                switch (bytes[0])
+                try
                 {
-                    case (byte)PacketType.PingReq:
-                        _ = SendAsync(new[] { (byte)PacketType.PingResp, (byte)0x00 });
-                        break;
-                    case (byte)PacketType.Publish:
-                        var publish = PacketEncoder.DecodePublish(bytes);
+                    var result = await udp.ReceiveAsync();
+                    var bytes = result.Buffer;
 
-                        if (topics.Any(x => x.IsMatch(publish.Topic)))
-                        {
-                            foreach (var callback in callbacks) _ = callback(publish);
-                        }
-                        else
-                        {
-                            Console.WriteLine("Received message but no topics that match on: {0}", publish.Topic);
-                        }
-                        break;
-                    case (byte)PacketType.Subscribe:
-                        var subscribe = PacketEncoder.DecodeSubscribe(bytes);
-                        Console.WriteLine("Subscriber for: {0}", subscribe.Topic);
-                        foreach (var i in retainedMessages)
-                        {
-                            Console.WriteLine("Comparing with: {0}", i.Key);
-                            var filter = new TopicFilter(subscribe.Topic);
-                            if (filter.IsMatch(i.Key))
+                    if (bytes.Length < 2) throw new InvalidOperationException("Packet lenght < 2");
+
+                    switch (bytes[0])
+                    {
+                        case (byte)PacketType.PingReq:
+                            logger?.LogTrace("RX PING: {0}, Sending PONG", result.RemoteEndPoint);
+                            _ = SendAsync(new[] { (byte)PacketType.PingResp, (byte)0x00 });
+                            break;
+                        case (byte)PacketType.PingResp:
+                            logger?.LogTrace("RX PONG: {0}", result.RemoteEndPoint);
+                            break;
+                        case (byte)PacketType.Publish:
+                            var publish = PacketEncoder.DecodePublish(bytes);
+
+                            if (topics.Any(x => x.IsMatch(publish.Topic)))
                             {
-                                _ = SendAsync(i.Value);
+                                foreach (var callback in callbacks) _ = callback(publish);
                             }
-                        }
-                        break;
+                            else
+                            {
+                                logger?.LogTrace("Received message but no topics that match on: {0}", publish.Topic);
+                            }
+                            break;
+                        case (byte)PacketType.Subscribe:
+                            var subscribe = PacketEncoder.DecodeSubscribe(bytes);
+                            logger?.LogTrace($"Subscriber for: {subscribe.Topic}");
+                            foreach (var i in retainedMessages)
+                            {
+                                logger?.LogTrace($"Comparing with: {i.Key}");
+                                var filter = new TopicFilter(subscribe.Topic);
+                                if (filter.IsMatch(i.Key))
+                                {
+                                    _ = SendAsync(i.Value);
+                                }
+                            }
+                            break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger?.LogError(ex, "Process failed");
                 }
             }
         }
