@@ -107,17 +107,85 @@ namespace MqttUdp
             var remaining = length - topicLengthBytes - topicLength;
             var payload = r.ReadBytes(remaining);
 
-            int number = 0;
-            DateTime measuredAt = default;
-            DateTime sentAt = default;
-            byte[] hashFromPacket = Array.Empty<byte>(); ;
-            bool isEqual = default;
-            int replyTo = 0;
+            int number, replyTo;
+            DateTime measuredAt, sentAt;
+            byte[] hashFromPacket;
+            bool isEqual;
+
+            ProcessTTR(data, r, out number, out measuredAt, out sentAt, out hashFromPacket, out isEqual, out replyTo);
+
+            Guard.Assert(r.Position, data.Length);
+
+            return new PublishPacket
+            {
+                Topic = topic,
+                Payload = payload.ToArray(),
+                MeasuredAt = measuredAt,
+                SentAt = sentAt,
+                Sequence = number,
+                Hash = hashFromPacket,
+                HashMatch = isEqual,
+                ReplyTo = replyTo
+            };
+        }
+
+        public static Span<byte> EncodeSubscribe(SubscribePacket packet)
+        {
+            var w = new Writer();
+            w.Write((byte)PacketType.Subscribe);
+
+            var topicBytes = Encoding.GetBytes(packet.Topic);
+            var length = topicBytes.Length + 2;
+
+            w.WriteVlq(length);
+
+
+            //Topic
+            w.WriteBigEndian((short)topicBytes.Length);
+            w.Write(topicBytes);
+            w.Write((byte)packet.QoS);
+
+            return w.Buffer.AsSpan(0, w.Position);
+        }
+
+        public static SubscribePacket DecodeSubscribe(byte[] data)
+        {
+            var r = new Reader(data);
+            var type = r.ReadByte();
+            Guard.Assert((byte)PacketType.Subscribe, type);
+
+            var length = r.ReadInt32Vlq(out var _);
+
+            if (length + 2 > data.Length) throw new InvalidOperationException($"Packet too short {length + 2} {data.Length}");
+
+            var topicLength = r.ReadInt16BigEndian();
+            var topic = Encoding.GetString(r.ReadBytes(topicLength));
+            var qos = r.ReadByte();
+
+            ProcessTTR(data, r, out var number, out var measuredAt, out var sentAt, out var hashFromPacket, out var isEqual, out var replyTo);
+
+            Guard.Assert(r.Position, data.Length);
+
+            return new SubscribePacket(topic)
+            {
+                QoS = qos
+            };
+        }
+
+        private static void ProcessTTR(byte[] data, Reader r, out int number, out DateTime measuredAt, out DateTime sentAt, out byte[] hashFromPacket, out bool isEqual, out int replyTo)
+        {
+            number = 0;
+            measuredAt = default;
+            sentAt = default;
+            hashFromPacket = Array.Empty<byte>();
+            ;
+            isEqual = default;
+            replyTo = 0;
             while (r.Peek())
             {
                 var ttrType = (char)r.ReadByte();
                 var ttrLength = r.ReadInt32Vlq(out var vlqBytes);
-                
+
                 switch (ttrType)
                 {
                     case 'r':
@@ -153,61 +221,6 @@ namespace MqttUdp
                         break;
                 }
             }
-
-            Guard.Assert(r.Position, data.Length);
-
-            return new PublishPacket
-            {
-                Topic = topic,
-                Payload = payload.ToArray(),
-                MeasuredAt = measuredAt,
-                SentAt = sentAt,
-                Sequence = number,
-                Hash = hashFromPacket,
-                HashMatch = isEqual,
-                ReplyTo = replyTo
-            };
-        }
-
-        public static Span<byte> EncodeSubscribe(SubscribePacket packet)
-        {
-            var w = new Writer();
-            w.Write((byte)PacketType.Subscribe);
-
-            var topicBytes = Encoding.GetBytes(packet.Topic);
-            var topicLengthBytes = VarLenQuantity.ToVlqCollection((ulong)topicBytes.Length).ToArray();
-
-            //Length
-            w.WriteVlq(topicLengthBytes.Length + topicBytes.Length + 1);
-
-            //Topic
-            w.Write(topicLengthBytes);
-            w.Write(topicBytes);
-            w.Write((byte)packet.QoS);
-
-            return w.Buffer.AsSpan(0, w.Position);
-        }
-
-        public static SubscribePacket DecodeSubscribe(byte[] data)
-        {
-            var r = new Reader(data);
-            var type = r.ReadByte();
-            Guard.Assert((byte)PacketType.Subscribe, type);
-
-            var length = r.ReadInt32Vlq(out _);
-
-            if (length + 2 > data.Length) throw new InvalidOperationException("Packet too short");
-
-            var topicLength = r.ReadInt32Vlq(out var _);
-            var topic = Encoding.GetString(r.ReadBytes(topicLength));
-            var qos = r.ReadByte();
-
-            Guard.Assert(r.Position, data.Length);
-
-            return new SubscribePacket(topic)
-            {
-                QoS = qos
-            };
         }
     }
 }
