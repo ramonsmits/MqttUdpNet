@@ -10,7 +10,7 @@ namespace MqttUdp
             public byte[] Buffer { get; set; }
             public int Position { get; set; }
 
-            public Reader(byte[] buffer) // Max UDP :-)
+            public Reader(byte[] buffer)
             {
                 Buffer = buffer;
             }

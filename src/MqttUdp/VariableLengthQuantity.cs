@@ -5,7 +5,7 @@
     using System.IO;
     using System.Linq;
 
-     static class VariableLengthQuantity
+    static class VariableLengthQuantity
     {
         /// <summary>
         /// Reads a 7-bit encoded variable-length quantity from binary and return it as integer.
@@ -68,7 +68,7 @@
                 throw new ArgumentNullException("writer");
             if (value < 0)
                 throw new ArgumentOutOfRangeException("value", value, "value must be 0 or greater");
-            int count=0;
+            int count = 0;
 
             do
             {
@@ -87,7 +87,7 @@
             if (reader == null)
                 throw new ArgumentNullException("reader");
 
-            count=0;
+            count = 0;
             bool more = true;
             int value = 0;
             int shift = 0;

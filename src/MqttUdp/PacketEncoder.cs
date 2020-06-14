@@ -1,9 +1,7 @@
 ﻿using System;
-using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
-using Vlq;
 
 namespace MqttUdp
 {
@@ -107,26 +105,17 @@ namespace MqttUdp
             var remaining = length - topicLengthBytes - topicLength;
             var payload = r.ReadBytes(remaining);
 
-            int number, replyTo;
-            DateTime measuredAt, sentAt;
-            byte[] hashFromPacket;
-            bool isEqual;
-
-            ProcessTTR(data, r, out number, out measuredAt, out sentAt, out hashFromPacket, out isEqual, out replyTo);
-
-            Guard.Assert(r.Position, data.Length);
-
-            return new PublishPacket
+            var result = new PublishPacket
             {
                 Topic = topic,
                 Payload = payload.ToArray(),
-                MeasuredAt = measuredAt,
-                SentAt = sentAt,
-                Sequence = number,
-                Hash = hashFromPacket,
-                HashMatch = isEqual,
-                ReplyTo = replyTo
             };
+
+            ProcessTTR(r, result);
+
+            Guard.Assert(r.Position, data.Length);
+
+            return result;
         }
 
         public static Span<byte> EncodeSubscribe(SubscribePacket packet)
@@ -138,7 +127,6 @@ namespace MqttUdp
             var length = topicBytes.Length + 2;
 
             w.WriteVlq(length);
-
 
             //Topic
             w.WriteBigEndian((short)topicBytes.Length);
@@ -156,64 +144,49 @@ namespace MqttUdp
 
             var length = r.ReadInt32Vlq(out var _);
 
-            if (length + 2 > data.Length) throw new InvalidOperationException($"Packet too short {length + 2} {data.Length}");
+            if (length + 2 > data.Length) throw new InvalidOperationException("Packet too short");
 
             var topicLength = r.ReadInt16BigEndian();
             var topic = Encoding.GetString(r.ReadBytes(topicLength));
             var qos = r.ReadByte();
 
-            ProcessTTR(data, r, out var number, out var measuredAt, out var sentAt, out var hashFromPacket, out var isEqual, out var replyTo);
+            var result = new SubscribePacket(topic) { QoS = qos };
+
+            ProcessTTR(r, result);
 
             Guard.Assert(r.Position, data.Length);
 
-            return new SubscribePacket(topic)
-            {
-                QoS = qos
-            };
+            return result;
         }
 
-        private static void ProcessTTR(byte[] data, Reader r, out int number, out DateTime measuredAt, out DateTime sentAt, out byte[] hashFromPacket, out bool isEqual, out int replyTo)
+        private static void ProcessTTR(Reader r, Packet packet)
         {
-            number = 0;
-            measuredAt = default;
-            sentAt = default;
-            hashFromPacket = Array.Empty<byte>();
-            ;
-            isEqual = default;
-            replyTo = 0;
             while (r.Peek())
             {
                 var ttrType = (char)r.ReadByte();
-                var ttrLength = r.ReadInt32Vlq(out var vlqBytes);
+                var ttrLength = r.ReadInt32Vlq(out var _);
 
                 switch (ttrType)
                 {
                     case 'r':
                         Guard.Assert(4, ttrLength);
-                        replyTo = r.ReadInt32BigEndian();
+                        packet.ReplyTo = r.ReadInt32BigEndian();
                         break;
                     case 'n':
                         Guard.Assert(4, ttrLength);
-                        number = r.ReadInt32BigEndian();
+                        packet.Sequence = r.ReadInt32BigEndian();
                         break;
                     case 's':
-                        var position = r.Position;
-                        var hashLength = position - vlqBytes - 1;
                         Guard.Assert(16, ttrLength);
-                        hashFromPacket = r.ReadBytes(16).ToArray();
-                        using (var md5Hash = MD5.Create())
-                        {
-                            var hashCalculated = md5Hash.ComputeHash(data, 0, hashLength).AsSpan();
-                            isEqual = hashCalculated.SequenceEqual(hashFromPacket);
-                        }
+                        packet.Hash = r.ReadBytes(16).ToArray();
                         break;
                     case 'm'://64 bit integer in network (big endian) byte order.
                         Guard.Assert(sizeof(long), ttrLength);
-                        measuredAt = DateTimeOffset.FromUnixTimeMilliseconds(r.ReadInt64BigEndian()).UtcDateTime;
+                        packet.MeasuredAt = DateTimeOffset.FromUnixTimeMilliseconds(r.ReadInt64BigEndian()).UtcDateTime;
                         break;
                     case 'p'://64 bit integer in network (big endian) byte order.
                         Guard.Assert(8, ttrLength);
-                        sentAt = DateTimeOffset.FromUnixTimeMilliseconds(r.ReadInt64BigEndian()).UtcDateTime;
+                        packet.SentAt = DateTimeOffset.FromUnixTimeMilliseconds(r.ReadInt64BigEndian()).UtcDateTime;
                         break;
                     default:
                         Console.WriteLine("Unsupported TTR: {0}", ttrType);

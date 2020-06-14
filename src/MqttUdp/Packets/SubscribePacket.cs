@@ -1,6 +1,6 @@
 ﻿namespace MqttUdp
 {
-    public class SubscribePacket : IPacket
+    public class SubscribePacket : Packet
     {
         public SubscribePacket(string topic)
         {
